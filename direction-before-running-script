@@ -1,0 +1,12 @@
+Okay, here's a Bash script using a `for` loop to achieve this.
+
+**Assumptions:**
+
+1.  You have a text file named `servers.txt` in the same directory where you run the script. Each line in this file contains the hostname or IP address of a server you want to update.
+2.  You have SSH access configured to these servers from the machine where you run the script (preferably using SSH key-based authentication, so you don't have to enter passwords repeatedly).
+3.  The user running the script on the local machine has an account on the remote servers with `sudo` privileges to run `yum update`.
+4.  The remote servers use `yum` as their package manager (e.g., CentOS, RHEL older versions, Fedora). If they use `dnf` (newer Fedora, RHEL/CentOS 8+) or `apt` (Debian/Ubuntu), you'll need to change the command accordingly.
+
+```
+
+Choose the version you prefer. The `while read` loop is generally recommended for reading files line-by-line in Bash.
