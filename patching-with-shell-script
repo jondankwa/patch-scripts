@@ -1,0 +1,1 @@
+# write a for loop to ssh into a list of servers in a test file and perform a yum update.write output to another text file in the same directory.
