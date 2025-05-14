@@ -1,0 +1,217 @@
+Here's an Ansible playbook designed to meet your requirements. This playbook will:
+
+1.  **Read a server list**: From a specified file on the Ansible controller.
+2.  **Perform an update check**: On each Red Hat Linux server using DNF.
+3.  **Check Tomcat process**: See if a Tomcat process is running.
+4.  **Write to a logfile**: All actions and statuses for each server will be logged to a file on the Ansible controller.
+5.  **Perform DNF patching**: Apply all available DNF updates to each Red Hat Linux server.
+
+**Before you run this playbook:**
+
+  * **Ansible Installation**: Ensure Ansible is installed on your control node.
+  * **Server List File**: Create a file (e.g., `server_list.txt`) on your Ansible controller. List each Red Hat server's hostname or IP address on a new line in this file.
+    Example `server_list.txt`:
+    ```
+    server1.example.com
+    192.168.1.10
+    server2
+    ```
+  * **SSH Access**: Ensure your Ansible control node has SSH access (preferably key-based) to all target servers listed. The user Ansible connects with should have `sudo` privileges for tasks like patching and potentially for `dnf update_cache`.
+  * **Tomcat Process Pattern**: The variable `tomcat_process_name_pattern` is used with `pgrep` to find Tomcat. Adjust this pattern if your Tomcat processes are identified differently (e.g., by a specific Java class like `org.apache.catalina.startup.Bootstrap`).
+
+**Ansible Playbook (`manage_redhat_servers.yml`):**
+
+```yaml
+---
+# Global variables for the playbook
+vars:
+  # (REQUIRED) Path to the file on the Ansible controller containing server hostnames/IPs, one per line.
+  server_list_file: "./server_list.txt"
+  # Log file path on the Ansible controller.
+  # For a date-stamped log, you could use: "/tmp/ansible_server_management_{{ ansible_date_time.date }}.log"
+  log_file: "/tmp/ansible_server_management.log"
+  # Dynamic inventory group name that will be populated from the server_list_file.
+  dynamic_inventory_group: "dynamically_managed_redhat_servers"
+  # Pattern to identify the Tomcat Java process. Adjust if needed.
+  # A more specific pattern could be: "java.*org.apache.catalina.startup.Bootstrap"
+  tomcat_process_name_pattern: "java.*tomcat"
+
+# Play 1: Read server list from file and prepare dynamic inventory & log file
+- name: Prepare Server List and Initialize Log
+  hosts: localhost # This play runs on the Ansible controller machine
+  gather_facts: false # No need to gather facts from localhost for these tasks
+
+  tasks:
+    - name: Initialize log file with a run header
+      ansible.builtin.blockinfile:
+        path: "{{ log_file }}"
+        block: |
+          ===============================================================================
+          Ansible Server Management Log
+          Playbook Run Timestamp: {{ ansible_date_time.iso8601 }}
+          Server List File Used: '{{ server_list_file }}'
+          ===============================================================================
+        marker: "# {mark} ANSIBLE LOG SESSION HEADER"
+        create: true # Creates the log file if it doesn't exist
+        mode: '0644' # Set appropriate permissions for the log file
+      run_once: true # Ensures this header is written only once per playbook execution
+
+    - name: Read server list from the specified file on the controller
+      ansible.builtin.set_fact:
+        # lookup('file', ...) reads from the Ansible controller.
+        # 'errors="ignore"' returns empty string if file not found, avoiding a hard error here.
+        # map('trim') removes leading/trailing whitespace from each hostname.
+        server_list_from_file: "{{ lookup('file', server_list_file, errors='ignore').splitlines() | map('trim') | list }}"
+
+    - name: Validate that the server list was loaded
+      ansible.builtin.assert:
+        that:
+          - server_list_from_file is defined
+          - server_list_from_file | length > 0
+        fail_msg: "CRITICAL: Server list file '{{ server_list_file }}' was not found, is empty, or could not be read. Please create it with one server hostname/IP per line."
+        success_msg: "Successfully read {{ server_list_from_file | length }} server(s) from '{{ server_list_file }}'."
+
+    - name: Add servers from the list to a dynamic inventory group
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: "{{ dynamic_inventory_group }}"
+        # You can specify connection parameters per host if needed, e.g.:
+        # ansible_user: your_remote_ssh_user
+        # ansible_ssh_private_key_file: /path/to/your/ssh/key
+      loop: "{{ server_list_from_file }}"
+      when: server_list_from_file is defined and server_list_from_file | length > 0
+
+# Play 2: Perform update checks, Tomcat status, and patching on the dynamically listed Red Hat servers
+- name: Perform Operations on Red Hat Servers
+  hosts: "{{ dynamic_inventory_group }}" # Targets the group populated in the first play.
+                                       # If the group is empty (e.g., server_list_file was empty/missing), this play will be skipped.
+  gather_facts: true # Gathers facts about each remote server (OS, IP, etc.)
+  become: true       # Assumes root/sudo privileges are needed for patching and dnf operations.
+
+  tasks:
+    - name: Verify target is a Red Hat family system and log start
+      block:
+        - name: Assert Red Hat family OS
+          ansible.builtin.assert:
+            that:
+              - ansible_os_family == "RedHat"
+            fail_msg: "SKIPPING HOST: {{ inventory_hostname }} (OS: {{ ansible_distribution | default('N/A') }} {{ ansible_distribution_version | default('N/A') }}) is not a Red Hat family system."
+            quiet: false # Ensures the assertion failure message is visible.
+
+        - name: Log start of processing for host
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "\n--- Processing Server: {{ inventory_hostname }} (OS: {{ ansible_distribution }} {{ ansible_distribution_version }}, IP: {{ ansible_default_ipv4.address | default('N/A') }}) | Time: {{ ansible_date_time.iso8601 }} ---"
+            create: false # Log file should have been created by Play 1
+          delegate_to: localhost # All logging tasks write to the controller's log file
+      rescue:
+        - name: Log skipped non-RedHat host
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "\n--- SKIPPING Server: {{ inventory_hostname }} (Not a Red Hat family OS) | Time: {{ ansible_date_time.iso8601 }} ---"
+            create: false
+          delegate_to: localhost
+          # This ensures even skipped hosts due to OS mismatch are noted in the log if desired.
+          # The play will continue with other hosts.
+
+    # Task Block for main operations - will only run if OS assert passed
+    - when: ansible_os_family == "RedHat" # Ensure these tasks only run on validated Red Hat hosts
+      block:
+        # 1. Perform DNF Update Check
+        - name: Check for available DNF updates (non-intrusive)
+          ansible.builtin.dnf:
+            list: updates      # Action to list available updates
+            update_cache: yes  # Refresh DNF cache before checking
+          register: dnf_update_check_results
+          changed_when: false  # Listing updates does not change system state
+          failed_when: false   # Do not fail the play for this host if only the check has issues; just log it.
+                               # `dnf list updates` returns 0 if updates are found or not, non-0 for actual errors.
+
+        - name: Log DNF update check outcome
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: |
+              [{{ inventory_hostname }}] Update Check:
+              {% if dnf_update_check_results.rc != 0 %}
+                Failed to check for updates (RC={{ dnf_update_check_results.rc }}). Error: {{ dnf_update_check_results.msg | default(dnf_update_check_results.stderr) | default(dnf_update_check_results.stdout) | default('No specific error message.') }}
+              {% elif dnf_update_check_results.results is defined and dnf_update_check_results.results | length > 0 %}
+                {{ dnf_update_check_results.results | length }} updates available. Preview (up to 10):
+                {% for pkg in dnf_update_check_results.results %}{% if loop.index <= 10 %}  - {{ pkg.name }} {{ pkg.epoch | default('0') }}:{{ pkg.version }}-{{ pkg.release }}.{{ pkg.arch }} (From Repo: {{ pkg.repo }}){% endif %}{% endfor %}{% if dnf_update_check_results.results | length > 10 %}  ... and {{ dnf_update_check_results.results | length - 10 }} more.{% endif %}
+              {% else %}
+                System is up-to-date or no updates were found by DNF.
+              {% endif %}
+          delegate_to: localhost
+
+        # 2. Check Tomcat Process Status
+        - name: Check if Tomcat process is running using pgrep
+          ansible.builtin.command:
+            cmd: "pgrep -af \"{{ tomcat_process_name_pattern }}\"" # Quotes around pattern handle spaces
+          register: tomcat_pgrep_command_status
+          changed_when: false   # This task does not change system state
+          failed_when: false    # pgrep returns 1 if not found (not an error for us), 0 if found. Other RCs are errors.
+
+        - name: Log Tomcat process status
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: |
+              [{{ inventory_hostname }}] Tomcat Process Status (Pattern: '{{ tomcat_process_name_pattern }}'):
+              {% if tomcat_pgrep_command_status.rc == 0 %}
+                RUNNING. Found process(es):
+                {% for line in tomcat_pgrep_command_status.stdout_lines %}  - {{ line }}{% endfor %}
+              {% elif tomcat_pgrep_command_status.rc == 1 %}
+                NOT RUNNING (no matching processes found by pgrep).
+              {% else %}
+                ERROR checking Tomcat status (pgrep command returned RC={{ tomcat_pgrep_command_status.rc }}). STDERR: {{ tomcat_pgrep_command_status.stderr | default('Not available') }}
+              {% endif %}
+          delegate_to: localhost
+
+        # 3. Perform DNF Patching
+        - name: Apply all available DNF updates (patching)
+          ansible.builtin.dnf:
+            name: '*'          # Apply updates for all installed packages
+            state: latest      # Ensure all packages are at their latest versions
+            # update_cache: yes # Cache was updated during the check phase, but can be enabled here for safety
+          register: dnf_patching_action_results
+          # `become: true` is already at the play level
+
+        - name: Log DNF patching results
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: |
+              [{{ inventory_hostname }}] DNF Patching:
+              {% if dnf_patching_action_results.failed %}
+                FAILED to apply patches. Error: {{ dnf_patching_action_results.msg | default('No specific error message from module.') }}
+                Module Output: {{ dnf_patching_action_results }}
+              {% elif dnf_patching_action_results.changed %}
+                Patches APPLIED successfully.
+                Packages changed (installed/updated): {{ (dnf_patching_action_results.changes.updated | default([]) + dnf_patching_action_results.changes.installed | default([])) | join(', ') if (dnf_patching_action_results.changes.updated or dnf_patching_action_results.changes.installed) else "None explicitly listed as changed by module, check detailed results." }}
+                Detailed results: {{ dnf_patching_action_results.results | default([]) }}
+              {% else %}
+                No patches applied. System was already up-to-date or no updates were available to apply.
+                Detailed results: {{ dnf_patching_action_results.results | default([]) }}
+              {% endif %}
+          delegate_to: localhost
+
+        - name: Log end of processing for host
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "--- Finished Server: {{ inventory_hostname }} ---\n" # Add a newline for better log readability
+          delegate_to: localhost
+
+```
+
+**How to run the playbook:**
+
+1.  Save the playbook code above as a YAML file (e.g., `manage_redhat_servers.yml`) on your Ansible controller.
+2.  Ensure your `server_list.txt` file is in the location specified by the `server_list_file` variable (default is the same directory as the playbook).
+3.  Open your terminal and navigate to the directory where you saved the playbook.
+4.  Run the playbook using the command:
+    ```bash
+    ansible-playbook manage_redhat_servers.yml
+    ```
+    If your SSH user is different from your current local user, or if you use a specific SSH key or need to provide a sudo password, you might need additional options:
+    ```bash
+    ansible-playbook manage_redhat_servers.yml -u your_ssh_user --private-key /path/to/your/ssh_key --ask-become-pass
+    ```
+
+After the playbook finishes, you can check the `ansible_server_management.log` file (or the path you configured) on your Ansible controller to see the detailed results of the operations for each server.
