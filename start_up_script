@@ -1,0 +1,17 @@
+#!/bin/bash
+
+DIR_ONE="/opt/appone/scripts"
+SERVICE_ONE_CMD="./start-appone.sh"
+
+DIR_TWO="/opt/apptwo/config"
+SERVICE_TWO_CMD="sudo systemctl start apptwo.service"
+
+cd "$DIR_ONE"
+if [ $? -eq 0 ]; then
+  $SERVICE_ONE_CMD &
+fi
+
+cd "$DIR_TWO"
+if [ $? -eq 0 ]; then
+  $SERVICE_TWO_CMD
+fi
