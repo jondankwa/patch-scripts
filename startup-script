@@ -1,0 +1,214 @@
+Here's a shell script designed to navigate into two specified directories and then start up two services on a Red Hat Linux system. This script assumes you are using `systemd` as your init system, which is standard for modern Red Hat distributions (like RHEL 7+, CentOS 7+, Fedora).
+
+**Understanding the Script's Logic:**
+
+The script performs the following actions:
+
+1.  Defines variables for the two directories you want to enter and the two services you want to start.
+2.  Includes logging functions to provide information about its progress and any errors.
+3.  Saves the script's original starting directory.
+4.  **For the first service:**
+      * Attempts to change to the first specified directory (`DIR1`).
+      * If successful, it then attempts to start the first service (`SERVICE1_NAME`) using `sudo systemctl start`.
+      * It checks if the service is already running before attempting to start it.
+      * Logs success or failure.
+5.  **For the second service:**
+      * Attempts to change to the second specified directory (`DIR2`).
+      * If successful, it then attempts to start the second service (`SERVICE2_NAME`) using `sudo systemctl start`.
+      * Checks if the service is already running.
+      * Logs success or failure.
+6.  Returns to the original directory from which the script was executed.
+7.  Reports a final status.
+
+**The Script:**
+
+```bash
+#!/bin/bash
+
+# Shell script to navigate into two directories and startup two services on Red Hat Linux.
+# Assumes systemd is used for service management (e.g., systemctl).
+
+# --- Configuration ---
+# TODO: !!! IMPORTANT !!!
+# Replace the placeholder values below with your actual directory paths and service names.
+# Ensure directory paths are absolute for clarity, e.g., /opt/app1/config
+DIR1="/path/to/your/first_directory"
+SERVICE1_NAME="your_first_service.service"   # e.g., httpd.service, customapp1.service
+
+DIR2="/path/to/your/second_directory"
+SERVICE2_NAME="your_second_service.service"  # e.g., mariadb.service, customapp2.service
+# --- End Configuration ---
+
+# --- Logging Functions ---
+log_info() {
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S'): $1"
+}
+
+log_error() {
+    echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S'): $1" >&2
+}
+
+# --- Main Script ---
+ORIGINAL_DIR=$(pwd) # Save the original directory
+OVERALL_STATUS=0    # 0 for success, 1 for any failure
+
+log_info "Starting service startup script..."
+log_info "Original directory: $ORIGINAL_DIR"
+
+# --- Process First Directory and Service ---
+log_info "--- Handling Directory 1 ($DIR1) and Service 1 ($SERVICE1_NAME) ---"
+if [ -d "$DIR1" ]; then
+    log_info "Attempting to change to directory: $DIR1"
+    if cd "$DIR1"; then
+        log_info "Successfully changed to directory: $(pwd)"
+        # If you have specific commands that MUST run from DIR1 before starting SERVICE1, add them here.
+        # Example:
+        # log_info "Running pre-start commands in $DIR1..."
+        # ./configure_service1.sh
+        # if [ $? -ne 0 ]; then
+        #    log_error "Pre-start command in $DIR1 failed."
+        #    OVERALL_STATUS=1
+        # fi
+
+        if [ $OVERALL_STATUS -eq 0 ]; then # Proceed only if pre-start commands (if any) were successful
+            log_info "Attempting to start service: $SERVICE1_NAME"
+            if sudo systemctl is-active --quiet "$SERVICE1_NAME"; then
+                log_info "Service $SERVICE1_NAME is already active."
+            else
+                sudo systemctl start "$SERVICE1_NAME"
+                if [ $? -eq 0 ]; then
+                    log_info "Service $SERVICE1_NAME started successfully."
+                    # You can uncomment the next line to see a brief status
+                    # sudo systemctl status "$SERVICE1_NAME" --no-pager -n 5
+                else
+                    log_error "Failed to start service $SERVICE1_NAME."
+                    # You can uncomment the next line to see the full status on failure
+                    # sudo systemctl status "$SERVICE1_NAME" --no-pager
+                    OVERALL_STATUS=1
+                fi
+            fi
+        fi
+    else
+        log_error "Failed to change to directory: $DIR1. Skipping operations for Service 1."
+        OVERALL_STATUS=1
+    fi
+else
+    log_error "Directory $DIR1 does not exist. Skipping operations for Service 1."
+    OVERALL_STATUS=1
+fi
+
+# --- Process Second Directory and Service ---
+log_info "--- Handling Directory 2 ($DIR2) and Service 2 ($SERVICE2_NAME) ---"
+# It's good practice to ensure a known starting point for cd if DIR2 could be relative,
+# but assuming absolute paths for DIR1 and DIR2 simplifies this.
+if [ -d "$DIR2" ]; then
+    log_info "Attempting to change to directory: $DIR2"
+    if cd "$DIR2"; then
+        log_info "Successfully changed to directory: $(pwd)"
+        # If you have specific commands that MUST run from DIR2 before starting SERVICE2, add them here.
+        # Example:
+        # log_info "Running pre-start commands in $DIR2..."
+        # ./prepare_service2.sh
+        # if [ $? -ne 0 ]; then
+        #    log_error "Pre-start command in $DIR2 failed."
+        #    OVERALL_STATUS=1
+        # fi
+
+        if [ $OVERALL_STATUS -eq 0 ]; then # Proceed only if pre-start commands (if any) and previous steps were successful (or adjust logic)
+            log_info "Attempting to start service: $SERVICE2_NAME"
+            if sudo systemctl is-active --quiet "$SERVICE2_NAME"; then
+                log_info "Service $SERVICE2_NAME is already active."
+            else
+                sudo systemctl start "$SERVICE2_NAME"
+                if [ $? -eq 0 ]; then
+                    log_info "Service $SERVICE2_NAME started successfully."
+                    # sudo systemctl status "$SERVICE2_NAME" --no-pager -n 5
+                else
+                    log_error "Failed to start service $SERVICE2_NAME."
+                    # sudo systemctl status "$SERVICE2_NAME" --no-pager
+                    OVERALL_STATUS=1
+                fi
+            fi
+        fi
+    else
+        log_error "Failed to change to directory: $DIR2. Skipping operations for Service 2."
+        OVERALL_STATUS=1
+    fi
+else
+    log_error "Directory $DIR2 does not exist. Skipping operations for Service 2."
+    OVERALL_STATUS=1
+fi
+
+# --- Return to Original Directory ---
+log_info "--- Finalizing ---"
+log_info "Attempting to return to original directory: $ORIGINAL_DIR"
+if cd "$ORIGINAL_DIR"; then
+    log_info "Successfully returned to original directory: $(pwd)"
+else
+    log_error "Could not return to original directory $ORIGINAL_DIR. Current directory is $(pwd)."
+    # This is not usually a critical failure for the script's main purpose but is good to note.
+fi
+
+if [ $OVERALL_STATUS -eq 0 ]; then
+    log_info "Script finished successfully."
+else
+    log_error "Script finished with one or more errors."
+fi
+
+exit $OVERALL_STATUS
+```
+
+**How to Use:**
+
+1.  **Customize:**
+
+      * Open a text editor (like `vi`, `nano`, or `gedit`).
+      * Copy the script above and paste it into the new file.
+      * **Crucially, modify the `DIR1`, `SERVICE1_NAME`, `DIR2`, and `SERVICE2_NAME` variables** at the top of the script to match your specific directory paths and the exact names of the services you want to manage. Service names usually end with `.service`.
+
+2.  **Save the Script:**
+
+      * Save the file with a meaningful name, for example, `manage_services.sh`.
+
+3.  **Make it Executable:**
+
+      * Open your terminal.
+      * Navigate to the directory where you saved the script.
+      * Run the command: `chmod +x manage_services.sh`
+
+4.  **Run the Script:**
+
+      * Execute the script from your terminal: `./manage_services.sh`
+      * Since the script uses `sudo systemctl`, it will likely prompt you for your password to authorize the service management commands.
+
+**Important Considerations:**
+
+  * **Absolute Paths:** It's generally recommended to use absolute paths for `DIR1` and `DIR2` to avoid ambiguity.
+  * **Permissions:** The user running this script needs `sudo` privileges to start system services. The script itself uses `sudo` for the `systemctl` commands.
+  * **Error Handling:** The script includes basic error checking (e.g., if directories exist, if `cd` commands succeed, if services start correctly). You can expand on this if needed.
+  * **Idempotency:** The script checks if services are already active using `systemctl is-active --quiet`. This makes it safer to run multiple times, as it won't try to restart an already running service (though `systemctl start` on an active service often does nothing or just confirms it's running).
+  * **Purpose of `cd`:** Changing directories (`cd`) before using `systemctl start` is generally not required for `systemctl` itself, as it manages system-wide services. However, you might need to be in a specific directory if:
+      * The service, upon starting, reads configuration files from its current working directory (less common for systemd services but possible for some applications).
+      * You need to run other commands or scripts from that specific directory *before* starting the service (examples are commented out in the script).
+  * **Alternative: Services Started by Local Scripts:** If your "services" are not standard systemd services but are instead started by running a script located *within* `DIR1` or `DIR2` (e.g., `./start_my_app.sh`), you would modify the `systemctl start ...` lines.
+    For example, instead of:
+    `sudo systemctl start "$SERVICE1_NAME"`
+    You might have:
+    ```bash
+    if [ -x "./your_startup_script_in_dir1.sh" ]; then
+        log_info "Starting service using local script in $(pwd)..."
+        sudo ./your_startup_script_in_dir1.sh # Add sudo if the script itself needs it
+        if [ $? -eq 0 ]; then
+            log_info "Local script for Service 1 executed successfully."
+        else
+            log_error "Local script for Service 1 failed."
+            OVERALL_STATUS=1
+        fi
+    else
+        log_error "Startup script ./your_startup_script_in_dir1.sh not found or not executable in $(pwd)."
+        OVERALL_STATUS=1
+    fi
+    ```
+    Adjust the `SERVICE1_NAME` variable accordingly if it's just a descriptive name in this scenario.
+
+This script provides a solid template. Remember to test it thoroughly in a non-production environment first.
